@@ -1,30 +1,50 @@
 # =============================================================================
-# Grand Challenge container
+# Grand Challenge container — slim build.
 #
-# Based on vLLM (includes CUDA + PyTorch + vLLM for in-process inference).
-# Runs as non-root user, no network access at runtime.
+# Builds on python:3.12-slim and pip-installs a pinned vLLM instead of the
+# ~30 GB vllm/vllm-openai base image. Same vLLM 0.23.0 / CUDA 13 wheels, only
+# the packages we actually use — the image is roughly half the size.
+#
+# Runtime notes:
+#   * Gemma 4's heterogeneous attention heads force vLLM's Triton attention
+#     backend, which JIT-compiles kernels at startup — hence gcc/g++ (Triton
+#     bundles its own ptxas, so no CUDA devel toolkit is needed).
+#   * torch.compile/CUDA graphs are disabled via generation.enforce_eager, and
+#     the flashinfer JIT sampler via VLLM_USE_FLASHINFER_SAMPLER=0, so nothing
+#     else needs to compile against nvcc at runtime.
+#   * Caches point at /tmp (the only guaranteed-writable dir on the platform)
+#     and the HF hub is forced offline (no network at runtime).
 #
 # Input:   /input          (read-only, mounted by platform)
 # Output:  /output         (writable, agent writes results here)
 # Model:   /opt/ml/model   (read-only, weights uploaded separately)
 # App:     /opt/app        (read-only, application code + resources)
 # =============================================================================
-# Base image pinned by digest for reproducible builds. This is
-# vllm/vllm-openai:latest as of 2026-06 (ships vLLM 0.23.0 + CUDA + PyTorch +
-# transformers 4.x). Keep this digest in sync with the Makefile BASE_IMAGE and
-# regenerate requirements.lock (`make lock`) whenever you bump it.
-FROM --platform=linux/amd64 vllm/vllm-openai@sha256:6d8429e38e3747723ca07ee1b17972e09bb9c51c4032b266f24fb1cc3b22ed8f
+FROM python:3.12-slim
 
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONUNBUFFERED=1 \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_HOME=/tmp/hf \
+    XDG_CACHE_HOME=/tmp/cache \
+    VLLM_CACHE_ROOT=/tmp/vllm \
+    TRITON_CACHE_DIR=/tmp/triton \
+    TORCHINDUCTOR_CACHE_DIR=/tmp/inductor \
+    VLLM_USE_FLASHINFER_SAMPLER=0
+
+# gcc/g++: Triton runtime JIT compilation. libgomp1/libnuma1: OpenMP for
+# scikit-learn/scipy and NUMA for vLLM.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc g++ libgomp1 libnuma1 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Non-root user (required by Grand Challenge)
 RUN groupadd -r user && useradd -m --no-log-init -r -g user user
 
 WORKDIR /opt/app
 
-# Install the pinned dependency closure resolved on top of this base image.
-# The lockfile includes the transformers 5.x upgrade Gemma 4 requires, so the
-# build is fully deterministic — no unpinned `pip install --upgrade`.
+# Install the pinned dependency closure (vLLM + torch + our deps). Fully
+# deterministic — every build installs the exact same versions.
 COPY --chown=user:user requirements.lock pyproject.toml README.md /opt/app/
 RUN pip install --no-cache-dir -r requirements.lock
 
@@ -34,8 +54,8 @@ COPY --chown=user:user src/ /opt/app/src/
 COPY --chown=user:user inference.py /opt/app/
 RUN pip install --no-cache-dir --no-deps .
 
-# Copy configs (single source of truth — same file Hydra reads locally),
-# Jinja prompt templates, and runtime resources (RAG DB + embedding model).
+# Configs (single source of truth — same file Hydra reads locally), Jinja
+# prompt templates, and runtime resources (RAG DB + embedding model).
 COPY --chown=user:user configs/ /opt/app/configs/
 COPY --chown=user:user templates/ /opt/app/templates/
 COPY --chown=user:user resources/ /opt/app/resources/

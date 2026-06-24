@@ -49,6 +49,7 @@ def _load_vllm(cfg: DictConfig) -> BaseChatModel:
         dtype="auto",
         max_model_len=cfg.generation.get("max_model_len", 32768),
         gpu_memory_utilization=cfg.generation.get("gpu_memory_utilization", 0.9),
+        enforce_eager=cfg.generation.get("enforce_eager", False),
     )
 
     params = SamplingParams(

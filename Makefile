@@ -58,22 +58,14 @@ format: ## Auto-format and auto-fix
 	ruff format src/ tests/
 	ruff check --fix src/ tests/
 
-# Base image the container builds on. KEEP IN SYNC with the Dockerfile FROM.
-# Used by `make lock` to compute the project dependency delta on top of it.
-BASE_IMAGE ?= vllm/vllm-openai@sha256:6d8429e38e3747723ca07ee1b17972e09bb9c51c4032b266f24fb1cc3b22ed8f
-
-lock: gc-build ## Regenerate requirements.lock (project deps resolved on top of the pinned base image)
-	@docker run --rm --entrypoint pip $(BASE_IMAGE) freeze | sort > /tmp/chimera-base-freeze.txt
-	@docker run --rm --entrypoint pip $(GC_IMAGE_TAG) freeze | sort > /tmp/chimera-built-freeze.txt
-	@{ echo "# Project dependency closure, fully pinned for reproducible builds."; \
+lock: gc-build ## Regenerate requirements.lock (full pinned closure from the built slim image)
+	@{ echo "# Project dependency closure, fully pinned for reproducible builds (slim image)."; \
 	   echo "#"; \
-	   echo "# These are the packages the project layer installs/upgrades ON TOP OF"; \
-	   echo "# the base image pinned in the Dockerfile. Together — pinned base image"; \
-	   echo "# + this lockfile — a build is deterministic."; \
-	   echo "#"; \
-	   echo "# Regenerate with \`make lock\` (keep Makefile BASE_IMAGE in sync with the"; \
-	   echo "# Dockerfile FROM)."; \
-	   comm -13 /tmp/chimera-base-freeze.txt /tmp/chimera-built-freeze.txt | grep -v '^chimera_agent_baseline'; \
+	   echo "# This is the COMPLETE resolved environment for the python:3.12-slim Dockerfile:"; \
+	   echo "# vLLM + torch (CUDA 13 wheels) + our deps. Unlike the old vllm/vllm-openai base"; \
+	   echo "# (which provided most of this), nothing is inherited — so this lock is the full"; \
+	   echo "# closure, not a delta. Regenerate with \`make lock\` from the built image."; \
+	   docker run --rm --entrypoint pip $(GC_IMAGE_TAG) freeze | grep -v '^chimera_agent_baseline' | sort; \
 	 } > requirements.lock
 	@echo "Wrote requirements.lock ($$(grep -vc '^#' requirements.lock) pinned packages)"
 
